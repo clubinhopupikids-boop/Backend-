@@ -1,0 +1,137 @@
+// Pupi Kids / PupiMundo — Prisma schema (foundation)
+// See backend/README.md for the full model overview.
+//
+// Design notes:
+// - UUIDs for every entity.
+// - Responsible owns the account; a Responsible has many Children.
+// - Child has a 1:1 ExperienceSettings (created alongside the child).
+// - Child has N:N CommunicationMode via ChildCommunicationMode.
+// - `DevelopmentProfile` is a free-form enum label used only as initial setup
+//   information. It MUST NOT drive branching clinical logic on the backend.
+
+generator client {
+  provider      = "prisma-client-js"
+  output        = "../node_modules/.prisma/client"
+  binaryTargets = ["native", "debian-openssl-3.0.x", "linux-arm64-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Supported UI languages. The backend stores/returns them; full i18n of the
+/// mobile apps is handled client-side.
+enum Language {
+  PT_BR
+  EN
+  ES
+}
+
+/// Initial development profile informed by the responsible during setup.
+/// This is a label, NOT a clinical classification. The product NEVER branches
+/// its flows by profile — profiles only adjust experience parameters.
+enum DevelopmentProfile {
+  TYPICAL_DEVELOPMENT
+  TEA
+  ADHD
+  DOWN_SYNDROME
+  MILD_INTELLECTUAL_DISABILITY
+  DEVELOPMENTAL_DELAY
+  LEARNING_DISABILITIES
+  SENSORY_SENSITIVITY
+  LOW_VISION
+  HIGH_ABILITIES_GIFTEDNESS
+  PREFER_NOT_TO_INFORM
+}
+
+/// Communication modalities a child can use. A child may use several at once.
+/// Modelled as a lookup table so the set is extensible without migrations
+/// for every addition.
+model CommunicationMode {
+  id        String   @id @default(uuid()) @db.Uuid
+  /// Stable machine code (e.g. VOICE, IMAGES_SYMBOLS). Unique.
+  code      String   @unique
+  /// Human readable label (presentation only).
+  label     String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  children ChildCommunicationMode[]
+
+  @@map("communication_mode")
+}
+
+/// A responsible (parent/guardian) account. Owns the login credentials.
+model Responsible {
+  id             String   @id @default(uuid()) @db.Uuid
+  email          String   @unique
+  passwordHash   String   @map("password_hash")
+  language       Language @default(PT_BR)
+  termsAcceptedAt DateTime @map("terms_accepted_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  children Child[]
+
+  @@map("responsible")
+}
+
+/// A child profile linked to a responsible. No independent login.
+model Child {
+  id                 String              @id @default(uuid()) @db.Uuid
+  responsibleId      String              @map("responsible_id") @db.Uuid
+  name               String
+  birthDate          DateTime            @db.Date @map("birth_date")
+  primaryLanguage    Language            @default(PT_BR) @map("primary_language")
+  // Optional initial setup info. A label, never a clinical branch.
+  developmentProfile DevelopmentProfile? @map("development_profile")
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @updatedAt @map("updated_at")
+
+  responsible Responsible           @relation(fields: [responsibleId], references: [id], onDelete: Cascade)
+  settings     ExperienceSettings?
+  communication ChildCommunicationMode[]
+
+  @@index([responsibleId])
+  @@map("child")
+}
+
+/// Per-child experience settings (1:1 with Child).
+/// Defaults are technical placeholders — NOT clinical prescriptions.
+/// Profile-to-parameter mapping is intentionally not encoded here.
+model ExperienceSettings {
+  id                                 String  @id @default(uuid()) @db.Uuid
+  childId                            String  @unique @map("child_id") @db.Uuid
+  animationSpeed                     Float   @default(1.0) @map("animation_speed")
+  soundVolume                        Float   @default(0.8) @map("sound_volume")
+  visualStimulusLevel                Float   @default(0.5) @map("visual_stimulus_level")
+  pupiResponseTime                   Float   @default(1.0) @map("pupi_response_time")
+  pupiSpeechFrequency                Float   @default(0.5) @map("pupi_speech_frequency")
+  instructionComplexity              Float   @default(0.5) @map("instruction_complexity")
+  maxSimultaneousInteractiveElements Int     @default(3) @map("max_simultaneous_interactive_elements")
+  narrationEnabled                   Boolean @default(true) @map("narration_enabled")
+  musicEnabled                       Boolean @default(true) @map("music_enabled")
+  visualEffectsEnabled               Boolean @default(true) @map("visual_effects_enabled")
+  createdAt                          DateTime @default(now()) @map("created_at")
+  updatedAt                          DateTime @updatedAt @map("updated_at")
+
+  child Child @relation(fields: [childId], references: [id], onDelete: Cascade)
+
+  @@map("experience_settings")
+}
+
+/// Join table for the N:N relation between Child and CommunicationMode.
+model ChildCommunicationMode {
+  id                  String   @id @default(uuid()) @db.Uuid
+  childId             String   @map("child_id") @db.Uuid
+  communicationModeId String   @map("communication_mode_id") @db.Uuid
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  child      Child            @relation(fields: [childId], references: [id], onDelete: Cascade)
+  mode       CommunicationMode @relation(fields: [communicationModeId], references: [id], onDelete: Cascade)
+
+  @@unique([childId, communicationModeId])
+  @@index([communicationModeId])
+  @@map("child_communication_mode")
+}

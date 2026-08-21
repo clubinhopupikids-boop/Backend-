@@ -1,0 +1,24 @@
+# Local PostgreSQL for development. Run: docker compose up -d
+# Docker Desktop must be running.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: pupikids-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pupikids
+      POSTGRES_PASSWORD: pupikids
+      POSTGRES_DB: pupikids
+    ports:
+      - '5432:5432'
+    volumes:
+      - pupikids_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U pupikids -d pupikids']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pupikids_pgdata:
+    name: pupikids_pgdata
