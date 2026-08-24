@@ -2,7 +2,11 @@ name: Deploy backend
 
 on:
   push:
-    branches: [production]
+    branches:
+      - production
+
+  # Permite executar manualmente pelo GitHub Actions
+  workflow_dispatch:
 
 concurrency:
   group: pupikids-backend-production
@@ -13,41 +17,156 @@ permissions:
 
 jobs:
   deploy:
+    name: Deploy PupiMundo Backend
     runs-on: ubuntu-latest
     environment: production
+    timeout-minutes: 20
+
     steps:
-      - uses: actions/checkout@v4
+      # ------------------------------------------------------------
+      # 1. Baixar o código do commit que disparou o deploy
+      # ------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v5
 
+      # ------------------------------------------------------------
+      # 2. Validar configurações necessárias
+      # ------------------------------------------------------------
+      - name: Validate deployment configuration
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_BACKEND_PATH: ${{ secrets.VPS_BACKEND_PATH }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          PM2_PROCESS_NAME: ${{ vars.PM2_PROCESS_NAME }}
+          HEALTH_URL: ${{ vars.HEALTH_URL }}
+        run: |
+          set -euo pipefail
+
+          test -n "$VPS_HOST" || {
+            echo "ERRO: Secret VPS_HOST não configurado."
+            exit 1
+          }
+
+          test -n "$VPS_USER" || {
+            echo "ERRO: Secret VPS_USER não configurado."
+            exit 1
+          }
+
+          test -n "$VPS_BACKEND_PATH" || {
+            echo "ERRO: Secret VPS_BACKEND_PATH não configurado."
+            exit 1
+          }
+
+          test -n "$VPS_SSH_PRIVATE_KEY" || {
+            echo "ERRO: Secret VPS_SSH_PRIVATE_KEY não configurado."
+            exit 1
+          }
+
+          test -n "$PM2_PROCESS_NAME" || {
+            echo "ERRO: Variable PM2_PROCESS_NAME não configurada."
+            exit 1
+          }
+
+          test -n "$HEALTH_URL" || {
+            echo "ERRO: Variable HEALTH_URL não configurada."
+            exit 1
+          }
+
+          echo "Configuração de deploy validada."
+
+      # ------------------------------------------------------------
+      # 3. Criar pacote do backend
+      #
+      # IMPORTANTE:
+      # O arquivo é criado em $RUNNER_TEMP e NÃO dentro do repo.
+      # Isso corrige o erro:
+      #
+      # tar: .: file changed as we read it
+      # ------------------------------------------------------------
       - name: Package backend source without secrets
-        run: >
-          tar -czf backend.tar.gz
-          --exclude=.git
-          --exclude=.github
-          --exclude=.env
-          --exclude=.env.*
-          --exclude=node_modules
-          --exclude=dist
-          .
+        run: |
+          set -euo pipefail
 
+          ARCHIVE="$RUNNER_TEMP/backend.tar.gz"
+
+          echo "Criando pacote em: $ARCHIVE"
+
+          tar \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.env' \
+            --exclude='.env.*' \
+            --exclude='node_modules' \
+            --exclude='dist' \
+            --exclude='coverage' \
+            --exclude='logs' \
+            -czf "$ARCHIVE" \
+            .
+
+          echo "Pacote criado:"
+          ls -lh "$ARCHIVE"
+
+      # ------------------------------------------------------------
+      # 4. Configurar SSH
+      # ------------------------------------------------------------
       - name: Configure SSH
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
         run: |
-          install -m 700 -d ~/.ssh
-          printf '%s' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -p "${{ vars.VPS_SSH_PORT || '22' }}" -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          set -euo pipefail
 
+          install -m 700 -d ~/.ssh
+
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+          ssh-keyscan \
+            -p "${{ vars.VPS_SSH_PORT || '22' }}" \
+            -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+          chmod 600 ~/.ssh/known_hosts
+
+          echo "SSH configurado."
+
+      # ------------------------------------------------------------
+      # 5. Testar conexão SSH antes de enviar qualquer coisa
+      # ------------------------------------------------------------
+      - name: Test SSH connection
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+
+          ssh \
+            -p "${{ vars.VPS_SSH_PORT || '22' }}" \
+            -i ~/.ssh/id_ed25519 \
+            "$VPS_USER@$VPS_HOST" \
+            "echo 'Conexão SSH com a VPS OK.'"
+
+      # ------------------------------------------------------------
+      # 6. Enviar pacote para a VPS
+      # ------------------------------------------------------------
       - name: Upload backend package
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_BACKEND_PATH: ${{ secrets.VPS_BACKEND_PATH }}
         run: |
-          scp -P "${{ vars.VPS_SSH_PORT || '22' }}" backend.tar.gz \
+          set -euo pipefail
+
+          scp \
+            -P "${{ vars.VPS_SSH_PORT || '22' }}" \
+            -i ~/.ssh/id_ed25519 \
+            "$RUNNER_TEMP/backend.tar.gz" \
             "$VPS_USER@$VPS_HOST:/tmp/pupikids-backend-${{ github.sha }}.tar.gz"
 
+          echo "Upload concluído."
+
+      # ------------------------------------------------------------
+      # 7. Instalar, gerar Prisma, buildar, migrar e reiniciar
+      # ------------------------------------------------------------
       - name: Install, migrate, reload and health-check
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -56,21 +175,192 @@ jobs:
           PM2_PROCESS_NAME: ${{ vars.PM2_PROCESS_NAME }}
           HEALTH_URL: ${{ vars.HEALTH_URL }}
         run: |
-          ssh -p "${{ vars.VPS_SSH_PORT || '22' }}" "$VPS_USER@$VPS_HOST" \
-            "VPS_BACKEND_PATH='$VPS_BACKEND_PATH' PM2_PROCESS_NAME='$PM2_PROCESS_NAME' HEALTH_URL='$HEALTH_URL' ARCHIVE='/tmp/pupikids-backend-${{ github.sha }}.tar.gz' bash -s" <<'REMOTE'
           set -euo pipefail
-          test -n "$VPS_BACKEND_PATH"
-          test -n "$PM2_PROCESS_NAME"
-          test -n "$HEALTH_URL"
+
+          ssh \
+            -p "${{ vars.VPS_SSH_PORT || '22' }}" \
+            -i ~/.ssh/id_ed25519 \
+            "$VPS_USER@$VPS_HOST" \
+            "VPS_BACKEND_PATH='$VPS_BACKEND_PATH' \
+             PM2_PROCESS_NAME='$PM2_PROCESS_NAME' \
+             HEALTH_URL='$HEALTH_URL' \
+             ARCHIVE='/tmp/pupikids-backend-${{ github.sha }}.tar.gz' \
+             RELEASE_SHA='${{ github.sha }}' \
+             bash -s" <<'REMOTE'
+
+          set -euo pipefail
+
+          echo "========================================"
+          echo "PupiMundo Backend Deploy"
+          echo "========================================"
+          echo "Commit: $RELEASE_SHA"
+          echo "Diretório: $VPS_BACKEND_PATH"
+          echo "PM2: $PM2_PROCESS_NAME"
+          echo "========================================"
+
+          # --------------------------------------------------------
+          # Validar instalação existente
+          # --------------------------------------------------------
           mkdir -p "$VPS_BACKEND_PATH"
+
+          # O .env de produção fica SOMENTE na VPS.
+          # Se ele não existir, abortar antes de alterar o backend.
+          if [ ! -f "$VPS_BACKEND_PATH/.env" ]; then
+            echo "ERRO: $VPS_BACKEND_PATH/.env não existe."
+            echo "Deploy abortado para proteger a configuração de produção."
+
+            rm -f "$ARCHIVE"
+
+            exit 1
+          fi
+
+          # Garantir proteção das credenciais
+          chmod 600 "$VPS_BACKEND_PATH/.env"
+
+          echo "Arquivo .env de produção encontrado."
+
+          # --------------------------------------------------------
+          # Extrair código novo
+          # --------------------------------------------------------
+          echo "Extraindo nova versão..."
+
           tar -xzf "$ARCHIVE" -C "$VPS_BACKEND_PATH"
+
           rm -f "$ARCHIVE"
+
           cd "$VPS_BACKEND_PATH"
+
+          # --------------------------------------------------------
+          # Dependências
+          # --------------------------------------------------------
+          echo "Instalando dependências..."
+
           npm ci
+
+          # --------------------------------------------------------
+          # Prisma Client
+          # --------------------------------------------------------
+          echo "Gerando Prisma Client..."
+
           npx prisma generate
+
+          # --------------------------------------------------------
+          # Build NestJS
+          # --------------------------------------------------------
+          echo "Compilando backend..."
+
           npm run build
+
+          # Garantir que o build realmente produziu a aplicação
+          if [ ! -f "$VPS_BACKEND_PATH/dist/main.js" ]; then
+            echo "ERRO: dist/main.js não foi gerado."
+            exit 1
+          fi
+
+          # --------------------------------------------------------
+          # Migrations de produção
+          #
+          # A DATABASE_URL vem de:
+          # /var/www/pupi-backend/.env
+          #
+          # Portanto este comando atualiza o PostgreSQL Neon.
+          # --------------------------------------------------------
+          echo "Aplicando migrations Prisma..."
+
           npx prisma migrate deploy
+
+          # --------------------------------------------------------
+          # Reiniciar SOMENTE o backend Pupi
+          # --------------------------------------------------------
+          echo "Recarregando PM2..."
+
           pm2 reload "$PM2_PROCESS_NAME" --update-env
+
           pm2 save
-          curl --fail --silent --show-error --retry 10 --retry-delay 3 --retry-all-errors "$HEALTH_URL"
+
+          # --------------------------------------------------------
+          # Health Check
+          # --------------------------------------------------------
+          echo "Aguardando backend ficar disponível..."
+
+          sleep 2
+
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+
+            echo "Health check $attempt/10..."
+
+            if curl \
+              --fail \
+              --silent \
+              --show-error \
+              "$HEALTH_URL" > /tmp/pupi-health.json; then
+
+              echo
+              echo "Backend respondeu com sucesso:"
+              cat /tmp/pupi-health.json
+              echo
+              echo
+              echo "========================================"
+              echo "DEPLOY CONCLUÍDO COM SUCESSO"
+              echo "========================================"
+
+              rm -f /tmp/pupi-health.json
+
+              exit 0
+            fi
+
+            sleep 3
+
+          done
+
+          echo
+          echo "ERRO: Backend não passou no health check."
+          echo
+
+          echo "Status PM2:"
+          pm2 status "$PM2_PROCESS_NAME" || true
+
+          echo
+          echo "Últimas linhas do log:"
+          pm2 logs "$PM2_PROCESS_NAME" \
+            --lines 50 \
+            --nostream || true
+
+          exit 1
+
           REMOTE
+
+      # ------------------------------------------------------------
+      # 8. Resumo no GitHub
+      # ------------------------------------------------------------
+      - name: Deployment summary
+        if: success()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_BACKEND_PATH: ${{ secrets.VPS_BACKEND_PATH }}
+          PM2_PROCESS_NAME: ${{ vars.PM2_PROCESS_NAME }}
+          HEALTH_URL: ${{ vars.HEALTH_URL }}
+        run: |
+          {
+            echo "## ✅ PupiMundo Backend publicado"
+            echo ""
+            echo "**Commit:** \`${{ github.sha }}\`"
+            echo ""
+            echo "**Servidor:** \`$VPS_HOST\`"
+            echo ""
+            echo "**Diretório:** \`$VPS_BACKEND_PATH\`"
+            echo ""
+            echo "**PM2:** \`$PM2_PROCESS_NAME\`"
+            echo ""
+            echo "**Health:** \`$HEALTH_URL\`"
+            echo ""
+            echo "### Etapas executadas"
+            echo ""
+            echo "- ✅ Upload"
+            echo "- ✅ npm ci"
+            echo "- ✅ prisma generate"
+            echo "- ✅ NestJS build"
+            echo "- ✅ prisma migrate deploy"
+            echo "- ✅ PM2 reload"
+            echo "- ✅ Health check"
+          } >> "$GITHUB_STEP_SUMMARY"
