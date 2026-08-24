@@ -1,14 +1,16 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, OmitType, PartialType } from '@nestjs/swagger';
 import { DevelopmentProfile, Language } from '@prisma/client';
 import {
+  ArrayUnique,
+  IsArray,
   IsEnum,
   IsOptional,
   IsString,
   IsUUID,
   MaxLength,
+  Matches,
 } from 'class-validator';
 import { IsValidBirthDate, BirthDateInRange, BirthDateNotFuture } from 'src/common/validators/birth-date.validator';
-import { PartialType } from '@nestjs/swagger';
 
 export class CreateChildDto {
   @ApiProperty({ example: 'Luna' })
@@ -37,9 +39,24 @@ export class CreateChildDto {
   @IsOptional()
   @IsEnum(DevelopmentProfile)
   developmentProfile?: DevelopmentProfile;
+
+  @ApiProperty({
+    type: [String],
+    required: false,
+    example: ['VOICE', 'IMAGES_SYMBOLS'],
+    description: 'Optional stable communication-mode codes, persisted atomically with the child.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayUnique()
+  @IsString({ each: true })
+  @Matches(/\S/, { each: true, message: 'communicationModeCodes cannot contain blank values' })
+  communicationModeCodes?: string[];
 }
 
-export class UpdateChildDto extends PartialType(CreateChildDto) {}
+export class UpdateChildDto extends PartialType(
+  OmitType(CreateChildDto, ['communicationModeCodes'] as const),
+) {}
 
 export class ChildDto {
   @ApiProperty()
@@ -50,9 +67,6 @@ export class ChildDto {
 
   @ApiProperty({ type: String, format: 'date', example: '2018-05-14' })
   birthDate!: string;
-
-  @ApiProperty({ description: 'Derived from birthDate — not persisted' })
-  age!: number;
 
   @ApiProperty({ enum: Language })
   primaryLanguage!: Language;

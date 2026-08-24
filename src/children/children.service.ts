@@ -1,13 +1,20 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { DevelopmentProfile, Language } from '@prisma/client';
 import { PrismaService } from 'src/database/prisma.service';
 import { CreateChildDto, UpdateChildDto, ChildDto } from './dto/child.dto';
-import { calculateAge } from 'src/common/utils/calculate-age';
 import { parseDateOnly } from 'src/common/validators/birth-date.validator';
 
 @Injectable()
 export class ChildrenService {
+  private readonly logger = new Logger(ChildrenService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async list(responsibleId: string): Promise<ChildDto[]> {
@@ -15,15 +22,34 @@ export class ChildrenService {
       where: { responsibleId },
       orderBy: { createdAt: 'desc' },
     });
+    this.logger.debug(`children.list resultCount=${children.length}`);
     return children.map((c) => this.toDto(c));
   }
 
   async create(responsibleId: string, dto: CreateChildDto): Promise<ChildDto> {
     const birthDate = parseDateOnly(dto.birthDate)!;
+    const modeCodes = this.normalizedModeCodes(dto.communicationModeCodes);
+    this.logger.debug(
+      `children.create requested profile=${dto.developmentProfile ?? 'none'} communicationModes=${modeCodes.join(',') || 'none'}`,
+    );
 
     let created;
     try {
       created = await this.prisma.$transaction(async (tx) => {
+        const modes = modeCodes.length === 0
+          ? []
+          : await tx.communicationMode.findMany({
+              where: { code: { in: modeCodes } },
+            });
+
+        if (modes.length !== modeCodes.length) {
+          const knownCodes = new Set(modes.map((mode) => mode.code));
+          const unknownCodes = modeCodes.filter((code) => !knownCodes.has(code));
+          throw new BadRequestException(
+            `Unknown communication mode codes: ${unknownCodes.join(', ')}`,
+          );
+        }
+
         const child = await tx.child.create({
           data: {
             responsibleId,
@@ -36,6 +62,14 @@ export class ChildrenService {
         await tx.experienceSettings.create({
           data: { childId: child.id },
         });
+        if (modes.length > 0) {
+          await tx.childCommunicationMode.createMany({
+            data: modes.map((mode) => ({
+              childId: child.id,
+              communicationModeId: mode.id,
+            })),
+          });
+        }
         return child;
       });
     } catch (err) {
@@ -45,6 +79,7 @@ export class ChildrenService {
       throw err;
     }
 
+    this.logger.debug('children.create committed');
     return this.toDto(created);
   }
 
@@ -101,12 +136,20 @@ export class ChildrenService {
       id: child.id,
       name: child.name,
       birthDate: formatDate(child.birthDate),
-      age: calculateAge(child.birthDate),
       primaryLanguage: child.primaryLanguage as ChildDto['primaryLanguage'],
       developmentProfile: child.developmentProfile as ChildDto['developmentProfile'],
       createdAt: child.createdAt,
       updatedAt: child.updatedAt,
     };
+  }
+
+  private normalizedModeCodes(modeCodes: string[] | undefined): string[] {
+    if (!modeCodes) return [];
+    const normalized = modeCodes.map((code) => code.trim());
+    if (normalized.some((code) => !code)) {
+      throw new BadRequestException('Communication mode codes cannot be blank');
+    }
+    return Array.from(new Set(normalized));
   }
 }
 

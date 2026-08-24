@@ -1,0 +1,76 @@
+name: Deploy backend
+
+on:
+  push:
+    branches: [production]
+
+concurrency:
+  group: pupikids-backend-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package backend source without secrets
+        run: >
+          tar -czf backend.tar.gz
+          --exclude=.git
+          --exclude=.github
+          --exclude=.env
+          --exclude=.env.*
+          --exclude=node_modules
+          --exclude=dist
+          .
+
+      - name: Configure SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "${{ vars.VPS_SSH_PORT || '22' }}" -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload backend package
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_BACKEND_PATH: ${{ secrets.VPS_BACKEND_PATH }}
+        run: |
+          scp -P "${{ vars.VPS_SSH_PORT || '22' }}" backend.tar.gz \
+            "$VPS_USER@$VPS_HOST:/tmp/pupikids-backend-${{ github.sha }}.tar.gz"
+
+      - name: Install, migrate, reload and health-check
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_BACKEND_PATH: ${{ secrets.VPS_BACKEND_PATH }}
+          PM2_PROCESS_NAME: ${{ vars.PM2_PROCESS_NAME }}
+          HEALTH_URL: ${{ vars.HEALTH_URL }}
+        run: |
+          ssh -p "${{ vars.VPS_SSH_PORT || '22' }}" "$VPS_USER@$VPS_HOST" \
+            "VPS_BACKEND_PATH='$VPS_BACKEND_PATH' PM2_PROCESS_NAME='$PM2_PROCESS_NAME' HEALTH_URL='$HEALTH_URL' ARCHIVE='/tmp/pupikids-backend-${{ github.sha }}.tar.gz' bash -s" <<'REMOTE'
+          set -euo pipefail
+          test -n "$VPS_BACKEND_PATH"
+          test -n "$PM2_PROCESS_NAME"
+          test -n "$HEALTH_URL"
+          mkdir -p "$VPS_BACKEND_PATH"
+          tar -xzf "$ARCHIVE" -C "$VPS_BACKEND_PATH"
+          rm -f "$ARCHIVE"
+          cd "$VPS_BACKEND_PATH"
+          npm ci
+          npx prisma generate
+          npm run build
+          npx prisma migrate deploy
+          pm2 reload "$PM2_PROCESS_NAME" --update-env
+          pm2 save
+          curl --fail --silent --show-error --retry 10 --retry-delay 3 --retry-all-errors "$HEALTH_URL"
+          REMOTE
