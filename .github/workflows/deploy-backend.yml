@@ -38,8 +38,6 @@ jobs:
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_BACKEND_PATH: ${{ secrets.VPS_BACKEND_PATH }}
           VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
-          PM2_PROCESS_NAME: ${{ vars.PM2_PROCESS_NAME }}
-          HEALTH_URL: ${{ vars.HEALTH_URL }}
         run: |
           set -euo pipefail
 
@@ -60,16 +58,6 @@ jobs:
 
           test -n "$VPS_SSH_PRIVATE_KEY" || {
             echo "ERRO: Secret VPS_SSH_PRIVATE_KEY não configurado."
-            exit 1
-          }
-
-          test -n "$PM2_PROCESS_NAME" || {
-            echo "ERRO: Variable PM2_PROCESS_NAME não configurada."
-            exit 1
-          }
-
-          test -n "$HEALTH_URL" || {
-            echo "ERRO: Variable HEALTH_URL não configurada."
             exit 1
           }
 
@@ -122,9 +110,12 @@ jobs:
           printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
-          ssh-keyscan \
+          if ! ssh-keyscan \
             -p "${{ vars.VPS_SSH_PORT || '22' }}" \
-            -H "$VPS_HOST" >> ~/.ssh/known_hosts
+            -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null; then
+            echo "ERRO: Não foi possível configurar a chave do servidor SSH."
+            exit 1
+          fi
 
           chmod 600 ~/.ssh/known_hosts
 
@@ -140,11 +131,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          ssh \
+          if ! ssh \
             -p "${{ vars.VPS_SSH_PORT || '22' }}" \
             -i ~/.ssh/id_ed25519 \
             "$VPS_USER@$VPS_HOST" \
-            "echo 'Conexão SSH com a VPS OK.'"
+            "echo 'Conexão SSH com a VPS OK.'" > /dev/null 2>&1; then
+            echo "ERRO: Não foi possível testar a conexão SSH."
+            exit 1
+          fi
 
       # ------------------------------------------------------------
       # 6. Enviar pacote para a VPS
@@ -156,11 +150,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          scp \
+          if ! scp \
             -P "${{ vars.VPS_SSH_PORT || '22' }}" \
             -i ~/.ssh/id_ed25519 \
             "$RUNNER_TEMP/backend.tar.gz" \
-            "$VPS_USER@$VPS_HOST:/tmp/pupikids-backend-${{ github.sha }}.tar.gz"
+            "$VPS_USER@$VPS_HOST:/tmp/pupikids-backend-${{ github.sha }}.tar.gz" > /dev/null 2>&1; then
+            echo "ERRO: Não foi possível enviar o pacote do backend."
+            exit 1
+          fi
 
           echo "Upload concluído."
 
@@ -172,21 +169,17 @@ jobs:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_BACKEND_PATH: ${{ secrets.VPS_BACKEND_PATH }}
-          PM2_PROCESS_NAME: ${{ vars.PM2_PROCESS_NAME }}
-          HEALTH_URL: ${{ vars.HEALTH_URL }}
         run: |
           set -euo pipefail
 
-          ssh \
+          if ! ssh \
             -p "${{ vars.VPS_SSH_PORT || '22' }}" \
             -i ~/.ssh/id_ed25519 \
             "$VPS_USER@$VPS_HOST" \
             "VPS_BACKEND_PATH='$VPS_BACKEND_PATH' \
-             PM2_PROCESS_NAME='$PM2_PROCESS_NAME' \
-             HEALTH_URL='$HEALTH_URL' \
              ARCHIVE='/tmp/pupikids-backend-${{ github.sha }}.tar.gz' \
              RELEASE_SHA='${{ github.sha }}' \
-             bash -s" <<'REMOTE'
+             bash -s" > "$RUNNER_TEMP/backend-deploy.log" 2>&1 <<'REMOTE'; then
 
           set -euo pipefail
 
@@ -194,8 +187,7 @@ jobs:
           echo "PupiMundo Backend Deploy"
           echo "========================================"
           echo "Commit: $RELEASE_SHA"
-          echo "Diretório: $VPS_BACKEND_PATH"
-          echo "PM2: $PM2_PROCESS_NAME"
+          echo "PM2: pupi-backend"
           echo "========================================"
 
           # --------------------------------------------------------
@@ -206,7 +198,7 @@ jobs:
           # O .env de produção fica SOMENTE na VPS.
           # Se ele não existir, abortar antes de alterar o backend.
           if [ ! -f "$VPS_BACKEND_PATH/.env" ]; then
-            echo "ERRO: $VPS_BACKEND_PATH/.env não existe."
+            echo "ERRO: Arquivo .env de produção não existe."
             echo "Deploy abortado para proteger a configuração de produção."
 
             rm -f "$ARCHIVE"
@@ -270,28 +262,121 @@ jobs:
           # --------------------------------------------------------
           echo "Aplicando migrations Prisma..."
 
-          npm run prisma:migrate:deploy
+          npx prisma migrate deploy
 
           # --------------------------------------------------------
           # Reiniciar SOMENTE o backend Pupi
           # --------------------------------------------------------
-          echo "Iniciando/recarregando PM2..."
+          echo "Validando registro PM2..."
 
-          pm2 startOrReload "$VPS_BACKEND_PATH/ecosystem.config.js" \
-            --only "$PM2_PROCESS_NAME" \
-            --update-env
+          # Define somente o ambiente de execucao do processo. As demais
+          # configuracoes continuam sendo carregadas do .env existente.
+          export NODE_ENV=production
 
-          PM2_PID="$(pm2 pid "$PM2_PROCESS_NAME")"
-          if ! printf '%s' "$PM2_PID" | grep -Eq '^[1-9][0-9]*$'; then
-            echo "ERRO: PM2 nao retornou um PID valido para $PM2_PROCESS_NAME."
+          PM2_REGISTRATION="$(pm2 jlist | node -e '
+            let processes = "";
+            process.stdin.setEncoding("utf8");
+            process.stdin.on("data", (chunk) => { processes += chunk; });
+            process.stdin.on("end", () => {
+              try {
+                process.stdout.write(JSON.parse(processes).some((app) => app.name === "pupi-backend") ? "registered" : "missing");
+              } catch {
+                process.exit(2);
+              }
+            });
+          ')"
+
+          if [ "$PM2_REGISTRATION" = "registered" ]; then
+            PM2_EXEC_PATH="$(pm2 jlist | node -e '
+              const path = require("path");
+              let processes = "";
+              process.stdin.setEncoding("utf8");
+              process.stdin.on("data", (chunk) => { processes += chunk; });
+              process.stdin.on("end", () => {
+                try {
+                  const apps = JSON.parse(processes).filter((item) => item.name === "pupi-backend");
+                  if (apps.length === 0) process.exit(2);
+                  if (apps.length !== 1 || !apps[0].pm2_env || typeof apps[0].pm2_env.pm_exec_path !== "string") {
+                    process.stdout.write("");
+                    return;
+                  }
+                  process.stdout.write(path.resolve(apps[0].pm2_env.pm_exec_path));
+                } catch {
+                  process.exit(2);
+                }
+              });
+            ')"
+
+            if [ "$PM2_EXEC_PATH" = "$ENTRYPOINT" ]; then
+              echo "Registro PM2 usa o entrypoint esperado; recarregando."
+              pm2 startOrReload "$VPS_BACKEND_PATH/ecosystem.config.js" \
+                --only pupi-backend \
+                --update-env
+            else
+              echo "Registro PM2 usa um entrypoint divergente; substituindo-o."
+              pm2 delete pupi-backend
+              pm2 start "$VPS_BACKEND_PATH/ecosystem.config.js" \
+                --only pupi-backend \
+                --update-env
+            fi
+          else
+            echo "pupi-backend nao esta registrado no PM2; iniciando."
+            pm2 start "$VPS_BACKEND_PATH/ecosystem.config.js" \
+              --only pupi-backend \
+              --update-env
+          fi
+
+          echo "Aguardando processo PM2..."
+          sleep 2
+
+          PM2_DETAILS="$(pm2 jlist | node -e '
+            const path = require("path");
+            let processes = "";
+            process.stdin.setEncoding("utf8");
+            process.stdin.on("data", (chunk) => { processes += chunk; });
+            process.stdin.on("end", () => {
+              try {
+                const app = JSON.parse(processes).find((item) => item.name === "pupi-backend");
+                if (!app || !app.pm2_env) process.exit(2);
+                process.stdout.write(JSON.stringify({
+                  status: app.pm2_env.status,
+                  pm_exec_path: typeof app.pm2_env.pm_exec_path === "string" ? path.resolve(app.pm2_env.pm_exec_path) : null,
+                  pid: app.pid
+                }));
+              } catch {
+                process.exit(2);
+              }
+            });
+          ')"
+          PM2_STATUS="$(printf '%s' "$PM2_DETAILS" | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).status || ""')"
+          PM2_EXEC_PATH="$(printf '%s' "$PM2_DETAILS" | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).pm_exec_path || ""')"
+          PM2_PID="$(printf '%s' "$PM2_DETAILS" | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).pid || ""')"
+
+          if [ "$PM2_STATUS" != "online" ]; then
+            echo "ERRO: pupi-backend nao esta online no PM2."
             exit 1
           fi
 
-          PM2_COMMAND="$(tr '\0' ' ' < "/proc/$PM2_PID/cmdline")"
-          case "$PM2_COMMAND" in
-            *"$ENTRYPOINT"*) ;;
+          if [ "$PM2_EXEC_PATH" != "$ENTRYPOINT" ]; then
+            echo "ERRO: PM2 nao registrou o entrypoint esperado."
+            exit 1
+          fi
+
+          if ! printf '%s' "$PM2_PID" | grep -Eq '^[1-9][0-9]*$'; then
+            echo "ERRO: PM2 nao retornou um PID valido para pupi-backend."
+            exit 1
+          fi
+
+          if ! kill -0 "$PM2_PID" 2>/dev/null; then
+            echo "ERRO: O processo informado pelo PM2 nao existe."
+            exit 1
+          fi
+
+          PROCESS_EXECUTABLE="$(readlink -f "/proc/$PM2_PID/exe" 2>/dev/null || true)"
+          case "$(basename "$PROCESS_EXECUTABLE")" in
+            node|nodejs) ;;
             *)
-              echo "ERRO: PM2 nao iniciou o entrypoint esperado: $ENTRYPOINT"
+              echo "ERRO: O processo informado pelo PM2 nao e um processo Node."
               exit 1
               ;;
           esac
@@ -301,78 +386,71 @@ jobs:
           # --------------------------------------------------------
           # Health Check
           # --------------------------------------------------------
-          echo "Aguardando backend ficar disponível..."
-
-          sleep 2
-
+          echo "Aguardando health check de producao..."
+          HEALTH_CHECK_PASSED=false
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
-
             echo "Health check $attempt/10..."
 
             if curl \
               --fail \
               --silent \
               --show-error \
-              "$HEALTH_URL" > /tmp/pupi-health.json; then
-
-              echo
-              echo "Backend respondeu com sucesso:"
-              cat /tmp/pupi-health.json
-              echo
-              echo
-              echo "========================================"
-              echo "DEPLOY CONCLUÍDO COM SUCESSO"
-              echo "========================================"
-
-              rm -f /tmp/pupi-health.json
-
-              exit 0
+              --connect-timeout 5 \
+              --max-time 10 \
+              https://api.pupimundo.com.br/api/health > /dev/null; then
+              HEALTH_CHECK_PASSED=true
+              break
             fi
 
-            sleep 3
-
+            if [ "$attempt" -lt 10 ]; then
+              sleep 3
+            fi
           done
 
-          echo
-          echo "ERRO: Backend não passou no health check."
-          echo
+          if [ "$HEALTH_CHECK_PASSED" != "true" ]; then
+            echo "ERRO: Backend nao passou no health check de producao."
+            exit 1
+          fi
 
-          echo "Status PM2:"
-          pm2 status "$PM2_PROCESS_NAME" || true
+          DOCS_STATUS="$(curl \
+            --silent \
+            --show-error \
+            --connect-timeout 5 \
+            --max-time 10 \
+            --output /dev/null \
+            --write-out "%{http_code}" \
+            https://api.pupimundo.com.br/docs || true)"
+          if [ "$DOCS_STATUS" != "404" ]; then
+            echo "ERRO: /docs retornou status inesperado: $DOCS_STATUS"
+            exit 1
+          fi
 
-          echo
-          echo "Últimas linhas do log:"
-          pm2 logs "$PM2_PROCESS_NAME" \
-            --lines 50 \
-            --nostream || true
-
-          exit 1
+          echo "========================================"
+          echo "DEPLOY CONCLUÍDO COM SUCESSO"
+          echo "========================================"
 
           REMOTE
+            rm -f "$RUNNER_TEMP/backend-deploy.log"
+            echo "ERRO: Falha na execução remota do deploy."
+            exit 1
+          fi
+
+          rm -f "$RUNNER_TEMP/backend-deploy.log"
 
       # ------------------------------------------------------------
       # 8. Resumo no GitHub
       # ------------------------------------------------------------
       - name: Deployment summary
         if: success()
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_BACKEND_PATH: ${{ secrets.VPS_BACKEND_PATH }}
-          PM2_PROCESS_NAME: ${{ vars.PM2_PROCESS_NAME }}
-          HEALTH_URL: ${{ vars.HEALTH_URL }}
         run: |
           {
             echo "## ✅ PupiMundo Backend publicado"
             echo ""
             echo "**Commit:** \`${{ github.sha }}\`"
             echo ""
-            echo "**Servidor:** \`$VPS_HOST\`"
+            echo "**PM2:** \`pupi-backend\`"
             echo ""
-            echo "**Diretório:** \`$VPS_BACKEND_PATH\`"
-            echo ""
-            echo "**PM2:** \`$PM2_PROCESS_NAME\`"
-            echo ""
-            echo "**Health:** \`$HEALTH_URL\`"
+            echo "**Health:** \`/api/health\`"
             echo ""
             echo "### Etapas executadas"
             echo ""
@@ -381,6 +459,6 @@ jobs:
             echo "- ✅ prisma generate"
             echo "- ✅ NestJS build"
             echo "- ✅ prisma migrate deploy"
-            echo "- ✅ PM2 startOrReload"
+            echo "- ✅ PM2 validado e iniciado/recarregado"
             echo "- ✅ Health check"
           } >> "$GITHUB_STEP_SUMMARY"
