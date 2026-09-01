@@ -235,14 +235,15 @@ jobs:
           # --------------------------------------------------------
           echo "Instalando dependências..."
 
-          npm ci
+          # Build and migration CLIs are development dependencies.
+          npm ci --include=dev
 
           # --------------------------------------------------------
           # Prisma Client
           # --------------------------------------------------------
           echo "Gerando Prisma Client..."
 
-          npx prisma generate
+          npm run prisma:generate
 
           # --------------------------------------------------------
           # Build NestJS
@@ -252,7 +253,9 @@ jobs:
           npm run build
 
           # Garantir que o build realmente produziu a aplicação
-          if [ ! -f "$VPS_BACKEND_PATH/dist/main.js" ]; then
+          ENTRYPOINT="$VPS_BACKEND_PATH/dist/main.js"
+
+          if [ ! -f "$ENTRYPOINT" ]; then
             echo "ERRO: dist/main.js não foi gerado."
             exit 1
           fi
@@ -267,14 +270,31 @@ jobs:
           # --------------------------------------------------------
           echo "Aplicando migrations Prisma..."
 
-          npx prisma migrate deploy
+          npm run prisma:migrate:deploy
 
           # --------------------------------------------------------
           # Reiniciar SOMENTE o backend Pupi
           # --------------------------------------------------------
-          echo "Recarregando PM2..."
+          echo "Iniciando/recarregando PM2..."
 
-          pm2 reload "$PM2_PROCESS_NAME" --update-env
+          pm2 startOrReload "$VPS_BACKEND_PATH/ecosystem.config.js" \
+            --only "$PM2_PROCESS_NAME" \
+            --update-env
+
+          PM2_PID="$(pm2 pid "$PM2_PROCESS_NAME")"
+          if ! printf '%s' "$PM2_PID" | grep -Eq '^[1-9][0-9]*$'; then
+            echo "ERRO: PM2 nao retornou um PID valido para $PM2_PROCESS_NAME."
+            exit 1
+          fi
+
+          PM2_COMMAND="$(tr '\0' ' ' < "/proc/$PM2_PID/cmdline")"
+          case "$PM2_COMMAND" in
+            *"$ENTRYPOINT"*) ;;
+            *)
+              echo "ERRO: PM2 nao iniciou o entrypoint esperado: $ENTRYPOINT"
+              exit 1
+              ;;
+          esac
 
           pm2 save
 
@@ -361,6 +381,6 @@ jobs:
             echo "- ✅ prisma generate"
             echo "- ✅ NestJS build"
             echo "- ✅ prisma migrate deploy"
-            echo "- ✅ PM2 reload"
+            echo "- ✅ PM2 startOrReload"
             echo "- ✅ Health check"
           } >> "$GITHUB_STEP_SUMMARY"

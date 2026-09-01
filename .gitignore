@@ -6,6 +6,7 @@ node_modules/
 # build
 dist/
 build/
+*.tsbuildinfo
 
 # env
 .env
@@ -33,6 +34,11 @@ yarn-error.log*
 *.njsproj
 *.sln
 coverage/
+
+# Locally prepared media binaries and generated technical reports.
+prepared-media/
+thumbnails-review/
+thumbnails-review.zip
 
 # tests
 coverage/

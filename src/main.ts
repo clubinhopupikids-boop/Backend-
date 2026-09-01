@@ -53,9 +53,9 @@ async function bootstrap() {
     logger.log(`Swagger UI available at /${cfg.swaggerPath}`);
   }
 
-  await app.listen(cfg.port);
-  logger.log(`Application running on http://localhost:${cfg.port}/${cfg.appPrefix}`);
-  logger.log(`Health check at http://localhost:${cfg.port}/${cfg.appPrefix}/health`);
+  await app.listen(cfg.port, cfg.host);
+  logger.log(`Application running on http://${cfg.host}:${cfg.port}/${cfg.appPrefix}`);
+  logger.log(`Health check at http://${cfg.host}:${cfg.port}/${cfg.appPrefix}/health`);
 }
 
 void bootstrap();

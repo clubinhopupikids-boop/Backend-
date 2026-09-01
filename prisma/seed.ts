@@ -1,4 +1,6 @@
 import { PrismaClient } from '@prisma/client';
+import { seedMissions } from './seed-missions';
+import { seedLibraryMusic } from './seed-library-music';
 
 const prisma = new PrismaClient();
 
@@ -20,7 +22,11 @@ async function main() {
       create: mode,
     });
   }
-  console.log(`Seeded ${modes.length} communication modes.`);
+  const missionCount = await seedMissions(prisma);
+  const libraryMusicCount = await seedLibraryMusic(prisma);
+  console.log(
+    `Seeded ${modes.length} communication modes, ${missionCount} missions and ${libraryMusicCount} library music entries.`,
+  );
 }
 
 main()

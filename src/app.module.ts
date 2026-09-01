@@ -11,6 +11,12 @@ import { ChildrenModule } from './children/children.module';
 import { ExperienceSettingsModule } from './settings/experience-settings.module';
 import { CommunicationPreferencesModule } from './communication/communication-preferences.module';
 import { HealthModule } from './health/health.module';
+import { EconomyModule } from './economy/economy.module';
+import { MissionsModule } from './missions/missions.module';
+import { GamesModule } from './games/games.module';
+import { LibraryModule } from './library/library.module';
+import { ParentAccessModule } from './parent-access/parent-access.module';
+import { ParentAccessGuard } from './common/guards/parent-access.guard';
 
 @Module({
   imports: [
@@ -26,10 +32,16 @@ import { HealthModule } from './health/health.module';
     ChildrenModule,
     ExperienceSettingsModule,
     CommunicationPreferencesModule,
+    EconomyModule,
+    MissionsModule,
+    GamesModule,
+    LibraryModule,
+    ParentAccessModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
+    { provide: APP_GUARD, useClass: ParentAccessGuard },
   ],
 })
 export class AppModule {}

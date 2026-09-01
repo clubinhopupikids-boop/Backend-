@@ -45,6 +45,65 @@ enum DevelopmentProfile {
   PREFER_NOT_TO_INFORM
 }
 
+/// Recurrence of a mission. A completion is tied to one of these periods.
+enum MissionPeriod {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+/// Optional reflection provided after a mission has already been completed.
+enum MissionFeedbackRating {
+  VERY_FUN
+  FUN
+  SO_SO
+  DIFFICULT
+  VERY_DIFFICULT
+}
+
+/// Rarity is catalog metadata. Only active NORMAL missions participate in the
+/// current rotation; RARE entries are retained for future product work.
+enum MissionRarity {
+  NORMAL
+  RARE
+}
+
+/// Publication state shared by future game and library catalog entries.
+enum CatalogStatus {
+  AVAILABLE
+  COMING_SOON
+}
+
+enum GameCategory {
+  EMOTIONS
+  CREATIVITY
+  LOGIC
+  ATTENTION_MEMORY
+}
+
+enum LibraryContentType {
+  STORIES
+  MUSIC
+  VIDEOS
+}
+
+/// Technical representation of a library asset. Editorial type and technical
+/// format are intentionally separate: a MUSIC item may be audio-only or a
+/// video clip.
+enum LibraryMediaFormat {
+  AUDIO
+  VIDEO
+}
+
+/// Optional catalog metadata. Themes are not an Android filter in this phase.
+enum LibraryTheme {
+  EMOTIONS
+  ROUTINE
+  SOCIAL
+  DEVELOPMENT
+  MOVEMENT
+}
+
 /// Communication modalities a child can use. A child may use several at once.
 /// Modelled as a lookup table so the set is extensible without migrations
 /// for every addition.
@@ -64,13 +123,18 @@ model CommunicationMode {
 
 /// A responsible (parent/guardian) account. Owns the login credentials.
 model Responsible {
-  id             String   @id @default(uuid()) @db.Uuid
-  email          String   @unique
-  passwordHash   String   @map("password_hash")
-  language       Language @default(PT_BR)
-  termsAcceptedAt DateTime @map("terms_accepted_at")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  id                      String    @id @default(uuid()) @db.Uuid
+  email                   String    @unique
+  passwordHash            String    @map("password_hash")
+  language                Language  @default(PT_BR)
+  termsAcceptedAt         DateTime  @map("terms_accepted_at")
+  parentPinHash           String?   @map("parent_pin_hash")
+  parentPinCreatedAt      DateTime? @map("parent_pin_created_at")
+  parentPinUpdatedAt      DateTime? @map("parent_pin_updated_at")
+  parentPinFailedAttempts Int       @default(0) @map("parent_pin_failed_attempts")
+  parentPinLockedUntil    DateTime? @map("parent_pin_locked_until")
+  createdAt               DateTime  @default(now()) @map("created_at")
+  updatedAt               DateTime  @updatedAt @map("updated_at")
 
   children Child[]
 
@@ -86,15 +150,136 @@ model Child {
   primaryLanguage    Language            @default(PT_BR) @map("primary_language")
   // Optional initial setup info. A label, never a clinical branch.
   developmentProfile DevelopmentProfile? @map("development_profile")
+  /// Global child balances. Credits occur atomically with their source event.
+  starBalance        Int                 @default(0) @map("star_balance")
+  crystalBalance     Int                 @default(0) @map("crystal_balance")
   createdAt          DateTime            @default(now()) @map("created_at")
   updatedAt          DateTime            @updatedAt @map("updated_at")
 
   responsible Responsible           @relation(fields: [responsibleId], references: [id], onDelete: Cascade)
   settings     ExperienceSettings?
   communication ChildCommunicationMode[]
+  missionCompletions MissionCompletion[]
+  missionAssignments MissionAssignment[]
 
   @@index([responsibleId])
   @@map("child")
+}
+
+/// Catalog definition only. No catalog rows are seeded by this backend.
+model Mission {
+  id            String        @id @default(uuid()) @db.Uuid
+  /// Stable catalog key used by seed, history and mobile integration.
+  code          String        @unique
+  title         String
+  description   String
+  /// Null for inactive rare missions that do not belong to a rotation yet.
+  period        MissionPeriod?
+  /// Original thematic grouping from the official mission document.
+  theme         String?
+  iconKey       String?       @map("icon_key")
+  exclusionGroup String?      @map("exclusion_group")
+  rarity        MissionRarity @default(NORMAL)
+  starReward    Int           @default(0) @map("star_reward")
+  crystalReward Int           @default(0) @map("crystal_reward")
+  isActive      Boolean       @default(true) @map("is_active")
+  displayOrder  Int           @default(0) @map("display_order")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  completions MissionCompletion[]
+  assignments MissionAssignment[]
+
+  @@index([period, isActive, displayOrder])
+  @@map("mission")
+}
+
+/// Persisted, ordered set of missions offered to a child for one product
+/// calendar period. Assignments are never removed when the cycle changes.
+model MissionAssignment {
+  id        String        @id @default(uuid()) @db.Uuid
+  childId   String        @map("child_id") @db.Uuid
+  missionId String        @map("mission_id") @db.Uuid
+  period    MissionPeriod
+  periodKey String        @map("period_key")
+  slot      Int
+  assignedAt DateTime     @default(now()) @map("assigned_at")
+
+  child   Child   @relation(fields: [childId], references: [id], onDelete: Cascade)
+  mission Mission @relation(fields: [missionId], references: [id], onDelete: Restrict)
+
+  @@unique([childId, missionId, period, periodKey])
+  @@unique([childId, period, periodKey, slot])
+  @@index([childId, period, periodKey])
+  @@index([missionId])
+  @@map("mission_assignment")
+}
+
+/// Immutable record of the reward event for a child, mission and recurrence period.
+/// The unique constraint is the persistence-level idempotency guarantee.
+model MissionCompletion {
+  id              String                @id @default(uuid()) @db.Uuid
+  childId         String                @map("child_id") @db.Uuid
+  missionId       String                @map("mission_id") @db.Uuid
+  period          MissionPeriod
+  periodKey       String                @map("period_key")
+  starAwarded     Int                   @map("star_awarded")
+  crystalAwarded  Int                   @map("crystal_awarded")
+  completedAt     DateTime              @default(now()) @map("completed_at")
+  feedbackRating  MissionFeedbackRating? @map("feedback_rating")
+  feedbackComment String?               @map("feedback_comment")
+  feedbackCreatedAt DateTime?           @map("feedback_created_at")
+  feedbackUpdatedAt DateTime?           @map("feedback_updated_at")
+
+  child   Child   @relation(fields: [childId], references: [id], onDelete: Cascade)
+  mission Mission @relation(fields: [missionId], references: [id], onDelete: Restrict)
+
+  @@unique([childId, missionId, period, periodKey])
+  @@index([childId, period, periodKey])
+  @@index([missionId])
+  @@map("mission_completion")
+}
+
+/// Future game catalog. An empty table is a valid current application state.
+model Game {
+  id            String        @id @default(uuid()) @db.Uuid
+  title         String
+  category      GameCategory
+  coverUrl      String?       @map("cover_url")
+  starReward    Int           @default(0) @map("star_reward")
+  crystalReward Int           @default(0) @map("crystal_reward")
+  status        CatalogStatus @default(COMING_SOON)
+  displayOrder  Int           @default(0) @map("display_order")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  @@index([category, status, displayOrder])
+  @@map("game")
+}
+
+/// Sensory-library catalog. Object-storage keys are the persistent media
+/// source of truth; public or signed URLs are resolved by the backend.
+model LibraryContent {
+  id              String             @id @default(uuid()) @db.Uuid
+  /// Stable administrative/catalog key, never derived from the display title.
+  code            String             @unique
+  type            LibraryContentType
+  title           String
+  mediaFormat     LibraryMediaFormat? @map("media_format")
+  mimeType        String?            @map("mime_type")
+  storageKey      String?            @map("storage_key")
+  thumbnailStorageKey String?        @map("thumbnail_storage_key")
+  thumbnailUrl    String?            @map("thumbnail_url")
+  mediaUrl        String?            @map("media_url")
+  durationSeconds Int?               @map("duration_seconds")
+  theme           LibraryTheme?
+  status          CatalogStatus      @default(COMING_SOON)
+  displayOrder    Int                @default(0) @map("display_order")
+  createdAt       DateTime           @default(now()) @map("created_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
+
+  @@index([type, status, displayOrder])
+  @@map("library_content")
 }
 
 /// Per-child experience settings (1:1 with Child).
