@@ -1,4 +1,10 @@
-import { MissionPeriod, Prisma } from '@prisma/client';
+import {
+  ChildActivityType,
+  MissionPeriod,
+  Prisma,
+  RewardCurrency,
+  RewardReason,
+} from '@prisma/client';
 import { MissionsService } from './missions.service';
 
 const completion = {
@@ -24,6 +30,8 @@ describe('MissionsService', () => {
   const tx = {
     missionCompletion: { create: jest.fn() },
     child: { update: jest.fn() },
+    rewardTransaction: { create: jest.fn() },
+    childActivityEvent: { create: jest.fn() },
   };
   const prisma = {
     mission: { findFirst: jest.fn(), findMany: jest.fn() },
@@ -35,7 +43,7 @@ describe('MissionsService', () => {
   let service: MissionsService;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    jest.resetAllMocks();
     service = new MissionsService(
       prisma as never,
       childrenService as never,
@@ -80,6 +88,27 @@ describe('MissionsService', () => {
         },
       }),
     );
+    expect(tx.rewardTransaction.create).toHaveBeenCalledTimes(1);
+    expect(tx.rewardTransaction.create).toHaveBeenCalledWith({
+      data: {
+        childId: 'child-1',
+        missionCompletionId: 'completion-1',
+        currency: RewardCurrency.STAR,
+        amount: 4,
+        reason: RewardReason.MISSION_COMPLETED,
+        occurredAt: completion.completedAt,
+        idempotencyKey: 'mission-completion:completion-1:STAR',
+      },
+    });
+    expect(tx.childActivityEvent.create).toHaveBeenCalledTimes(1);
+    expect(tx.childActivityEvent.create).toHaveBeenCalledWith({
+      data: {
+        childId: 'child-1',
+        missionCompletionId: 'completion-1',
+        type: ChildActivityType.MISSION_COMPLETED,
+        occurredAt: completion.completedAt,
+      },
+    });
   });
 
   it('does not credit a second request when the database unique constraint wins a race', async () => {
@@ -98,6 +127,32 @@ describe('MissionsService', () => {
       crystals: 3,
     });
     expect(tx.child.update).not.toHaveBeenCalled();
+    expect(tx.rewardTransaction.create).not.toHaveBeenCalled();
+    expect(tx.childActivityEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('creates completion, event, reward and balance exactly once across an HTTP retry', async () => {
+    tx.missionCompletion.create
+      .mockResolvedValueOnce(completion)
+      .mockRejectedValueOnce(
+        new Prisma.PrismaClientKnownRequestError('unique completion', {
+          code: 'P2002',
+          clientVersion: 'test',
+        }),
+      );
+    tx.child.update.mockResolvedValue({ starBalance: 14, crystalBalance: 3 });
+    prisma.missionCompletion.findFirst.mockResolvedValue(completion);
+    prisma.child.findUniqueOrThrow.mockResolvedValue({ starBalance: 14, crystalBalance: 3 });
+
+    const first = await service.complete('responsible-1', 'child-1', 'mission-1');
+    const retried = await service.complete('responsible-1', 'child-1', 'mission-1');
+
+    expect(first.alreadyCompleted).toBe(false);
+    expect(retried.alreadyCompleted).toBe(true);
+    expect(first.completion.id).toBe(retried.completion.id);
+    expect(tx.child.update).toHaveBeenCalledTimes(1);
+    expect(tx.rewardTransaction.create).toHaveBeenCalledTimes(1);
+    expect(tx.childActivityEvent.create).toHaveBeenCalledTimes(1);
   });
 
   it('refuses to complete a mission for a child owned by another responsible', async () => {
@@ -143,6 +198,54 @@ describe('MissionsService', () => {
       stars,
       crystals,
     });
+    expect(tx.rewardTransaction.create).toHaveBeenCalledTimes(2);
+    expect(tx.rewardTransaction.create).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          currency: RewardCurrency.CRYSTAL,
+          amount: crystals,
+        }),
+      }),
+    );
+    expect(tx.childActivityEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('creates no ledger rows for a supported zero-reward mission but still records activity', async () => {
+    prisma.mission.findFirst.mockResolvedValue({
+      id: 'mission-1',
+      period: MissionPeriod.DAILY,
+      starReward: 0,
+      crystalReward: 0,
+      isActive: true,
+    });
+    tx.missionCompletion.create.mockResolvedValue({
+      ...completion,
+      starAwarded: 0,
+      crystalAwarded: 0,
+    });
+    tx.child.update.mockResolvedValue({ starBalance: 10, crystalBalance: 2 });
+
+    await expect(service.complete('responsible-1', 'child-1', 'mission-1')).resolves.toMatchObject({
+      alreadyCompleted: false,
+      stars: 10,
+      crystals: 2,
+    });
+    expect(tx.rewardTransaction.create).not.toHaveBeenCalled();
+    expect(tx.childActivityEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates a transaction failure without attempting a partial fallback', async () => {
+    tx.missionCompletion.create.mockResolvedValue(completion);
+    tx.child.update.mockResolvedValue({ starBalance: 14, crystalBalance: 3 });
+    tx.rewardTransaction.create.mockRejectedValue(new Error('ledger unavailable'));
+
+    await expect(service.complete('responsible-1', 'child-1', 'mission-1')).rejects.toThrow(
+      'ledger unavailable',
+    );
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(tx.childActivityEvent.create).not.toHaveBeenCalled();
+    expect(prisma.missionCompletion.findFirst).not.toHaveBeenCalled();
   });
 
   it('keeps earlier-period history untouched while reading current progress', async () => {

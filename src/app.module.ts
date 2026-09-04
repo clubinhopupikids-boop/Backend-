@@ -17,6 +17,8 @@ import { GamesModule } from './games/games.module';
 import { LibraryModule } from './library/library.module';
 import { ParentAccessModule } from './parent-access/parent-access.module';
 import { ParentAccessGuard } from './common/guards/parent-access.guard';
+import { FamilyNotesModule } from './family-notes/family-notes.module';
+import { ParentInsightsModule } from './parent-insights/parent-insights.module';
 
 @Module({
   imports: [
@@ -37,6 +39,8 @@ import { ParentAccessGuard } from './common/guards/parent-access.guard';
     GamesModule,
     LibraryModule,
     ParentAccessModule,
+    FamilyNotesModule,
+    ParentInsightsModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },

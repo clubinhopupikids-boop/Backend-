@@ -22,6 +22,8 @@
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "prisma:seed": "ts-node prisma/seed.ts",
+    "missions:audit:projections": "ts-node scripts/audit-mission-projections.ts",
+    "missions:backfill:projections": "ts-node scripts/backfill-mission-projections.ts",
     "library:prepare:music": "ts-node scripts/prepare-library-music.ts",
     "library:upload:music": "ts-node scripts/upload-library-music.ts",
     "library:seed:music": "ts-node scripts/seed-library-music.ts",

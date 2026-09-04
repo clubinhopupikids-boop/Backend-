@@ -1,5 +1,12 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { MissionPeriod, MissionRarity, Prisma } from '@prisma/client';
+import {
+  ChildActivityType,
+  MissionPeriod,
+  MissionRarity,
+  Prisma,
+  RewardCurrency,
+  RewardReason,
+} from '@prisma/client';
 import { ChildrenService } from 'src/children/children.service';
 import { PrismaService } from 'src/database/prisma.service';
 import type {
@@ -98,6 +105,41 @@ export class MissionsService {
           },
           select: { starBalance: true, crystalBalance: true },
         });
+
+        if (completion.starAwarded > 0) {
+          await tx.rewardTransaction.create({
+            data: {
+              childId,
+              missionCompletionId: completion.id,
+              currency: RewardCurrency.STAR,
+              amount: completion.starAwarded,
+              reason: RewardReason.MISSION_COMPLETED,
+              occurredAt: completion.completedAt,
+              idempotencyKey: rewardIdempotencyKey(completion.id, RewardCurrency.STAR),
+            },
+          });
+        }
+        if (completion.crystalAwarded > 0) {
+          await tx.rewardTransaction.create({
+            data: {
+              childId,
+              missionCompletionId: completion.id,
+              currency: RewardCurrency.CRYSTAL,
+              amount: completion.crystalAwarded,
+              reason: RewardReason.MISSION_COMPLETED,
+              occurredAt: completion.completedAt,
+              idempotencyKey: rewardIdempotencyKey(completion.id, RewardCurrency.CRYSTAL),
+            },
+          });
+        }
+        await tx.childActivityEvent.create({
+          data: {
+            childId,
+            missionCompletionId: completion.id,
+            type: ChildActivityType.MISSION_COMPLETED,
+            occurredAt: completion.completedAt,
+          },
+        });
         return { completion, child };
       });
       return {
@@ -182,4 +224,8 @@ export class MissionsService {
 
 function isUniqueCompletionError(error: unknown): error is Prisma.PrismaClientKnownRequestError {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+}
+
+function rewardIdempotencyKey(completionId: string, currency: RewardCurrency): string {
+  return `mission-completion:${completionId}:${currency}`;
 }

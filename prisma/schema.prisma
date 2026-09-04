@@ -68,6 +68,20 @@ enum MissionRarity {
   RARE
 }
 
+/// Product activity facts projected from canonical domain records.
+enum ChildActivityType {
+  MISSION_COMPLETED
+}
+
+enum RewardCurrency {
+  STAR
+  CRYSTAL
+}
+
+enum RewardReason {
+  MISSION_COMPLETED
+}
+
 /// Publication state shared by future game and library catalog entries.
 enum CatalogStatus {
   AVAILABLE
@@ -137,6 +151,7 @@ model Responsible {
   updatedAt               DateTime  @updatedAt @map("updated_at")
 
   children Child[]
+  familyNotes FamilyNote[]
 
   @@map("responsible")
 }
@@ -161,9 +176,34 @@ model Child {
   communication ChildCommunicationMode[]
   missionCompletions MissionCompletion[]
   missionAssignments MissionAssignment[]
+  activityEvents     ChildActivityEvent[]
+  rewardTransactions RewardTransaction[]
+  familyNotes FamilyNote[]
 
   @@index([responsibleId])
+  @@unique([id, responsibleId])
   @@map("child")
+}
+
+/// A private observation written by the authenticated family for one of its children.
+/// Notes are never interpreted as analytics, emotions, skills or clinical information.
+model FamilyNote {
+  id            String   @id @default(uuid()) @db.Uuid
+  responsibleId String   @map("responsible_id") @db.Uuid
+  childId       String   @map("child_id") @db.Uuid
+  clientRequestId String @map("client_request_id") @db.Uuid
+  text          String
+  observedAt    DateTime @map("observed_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  responsible Responsible @relation(fields: [responsibleId], references: [id], onDelete: Cascade)
+  child       Child       @relation(fields: [childId, responsibleId], references: [id, responsibleId], onDelete: Cascade)
+
+  @@index([childId, observedAt])
+  @@index([responsibleId, childId])
+  @@unique([responsibleId, childId, clientRequestId])
+  @@map("family_note")
 }
 
 /// Catalog definition only. No catalog rows are seeded by this backend.
@@ -233,11 +273,54 @@ model MissionCompletion {
 
   child   Child   @relation(fields: [childId], references: [id], onDelete: Cascade)
   mission Mission @relation(fields: [missionId], references: [id], onDelete: Restrict)
+  activityEvent ChildActivityEvent?
+  rewardTransactions RewardTransaction[]
 
   @@unique([childId, missionId, period, periodKey])
+  @@unique([id, childId])
   @@index([childId, period, periodKey])
+  @@index([childId, completedAt])
   @@index([missionId])
   @@map("mission_completion")
+}
+
+/// Immutable product-event projection. MissionCompletion remains canonical.
+model ChildActivityEvent {
+  id                  String            @id @default(uuid()) @db.Uuid
+  childId             String            @map("child_id") @db.Uuid
+  type                ChildActivityType
+  occurredAt          DateTime          @map("occurred_at")
+  createdAt           DateTime          @default(now()) @map("created_at")
+  missionCompletionId String            @map("mission_completion_id") @db.Uuid
+
+  child             Child             @relation(fields: [childId], references: [id], onDelete: Cascade)
+  missionCompletion MissionCompletion @relation(fields: [missionCompletionId, childId], references: [id, childId], onDelete: Cascade)
+
+  @@unique([missionCompletionId, childId])
+  @@index([childId, occurredAt])
+  @@index([childId, type, occurredAt])
+  @@map("child_activity_event")
+}
+
+/// Immutable reward ledger. Balances are the current projection used by the app.
+model RewardTransaction {
+  id                  String         @id @default(uuid()) @db.Uuid
+  childId             String         @map("child_id") @db.Uuid
+  currency            RewardCurrency
+  amount              Int
+  reason              RewardReason
+  occurredAt          DateTime       @map("occurred_at")
+  createdAt           DateTime       @default(now()) @map("created_at")
+  idempotencyKey      String         @unique @map("idempotency_key")
+  missionCompletionId String         @map("mission_completion_id") @db.Uuid
+
+  child             Child             @relation(fields: [childId], references: [id], onDelete: Cascade)
+  missionCompletion MissionCompletion @relation(fields: [missionCompletionId, childId], references: [id, childId], onDelete: Cascade)
+
+  @@unique([missionCompletionId, currency])
+  @@index([childId, occurredAt])
+  @@index([childId, currency, occurredAt])
+  @@map("reward_transaction")
 }
 
 /// Future game catalog. An empty table is a valid current application state.
