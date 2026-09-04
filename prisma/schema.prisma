@@ -71,6 +71,8 @@ enum MissionRarity {
 /// Product activity facts projected from canonical domain records.
 enum ChildActivityType {
   MISSION_COMPLETED
+  LIBRARY_STARTED
+  LIBRARY_COMPLETED
 }
 
 enum RewardCurrency {
@@ -99,6 +101,11 @@ enum LibraryContentType {
   STORIES
   MUSIC
   VIDEOS
+}
+
+enum LibraryPlaybackStatus {
+  STARTED
+  COMPLETED
 }
 
 /// Technical representation of a library asset. Editorial type and technical
@@ -179,6 +186,7 @@ model Child {
   activityEvents     ChildActivityEvent[]
   rewardTransactions RewardTransaction[]
   familyNotes FamilyNote[]
+  libraryPlaybacks LibraryPlayback[]
 
   @@index([responsibleId])
   @@unique([id, responsibleId])
@@ -291,12 +299,15 @@ model ChildActivityEvent {
   type                ChildActivityType
   occurredAt          DateTime          @map("occurred_at")
   createdAt           DateTime          @default(now()) @map("created_at")
-  missionCompletionId String            @map("mission_completion_id") @db.Uuid
+  missionCompletionId String?           @map("mission_completion_id") @db.Uuid
+  libraryPlaybackId   String?           @map("library_playback_id") @db.Uuid
 
   child             Child             @relation(fields: [childId], references: [id], onDelete: Cascade)
-  missionCompletion MissionCompletion @relation(fields: [missionCompletionId, childId], references: [id, childId], onDelete: Cascade)
+  missionCompletion MissionCompletion? @relation(fields: [missionCompletionId, childId], references: [id, childId], onDelete: Cascade)
+  libraryPlayback   LibraryPlayback?   @relation(fields: [libraryPlaybackId, childId], references: [id, childId], onDelete: Cascade)
 
   @@unique([missionCompletionId, childId])
+  @@unique([libraryPlaybackId, type])
   @@index([childId, occurredAt])
   @@index([childId, type, occurredAt])
   @@map("child_activity_event")
@@ -361,8 +372,37 @@ model LibraryContent {
   createdAt       DateTime           @default(now()) @map("created_at")
   updatedAt       DateTime           @updatedAt @map("updated_at")
 
+  playbacks LibraryPlayback[]
+
   @@index([type, status, displayOrder])
   @@map("library_content")
+}
+
+/// Canonical child participation in a real library playback. A catalog click
+/// is not a playback; this record is created only after the player confirms
+/// that media is actually playing.
+model LibraryPlayback {
+  id                 String                @id @default(uuid()) @db.Uuid
+  childId            String                @map("child_id") @db.Uuid
+  libraryContentId   String                @map("library_content_id") @db.Uuid
+  clientSessionId    String                @unique @map("client_session_id") @db.Uuid
+  status             LibraryPlaybackStatus @default(STARTED)
+  startedAt          DateTime              @map("started_at")
+  completedAt        DateTime?             @map("completed_at")
+  lastPositionMs     Int?                  @map("last_position_ms")
+  consumedDurationMs Int?                  @map("consumed_duration_ms")
+  createdAt          DateTime              @default(now()) @map("created_at")
+  updatedAt          DateTime              @updatedAt @map("updated_at")
+
+  child          Child               @relation(fields: [childId], references: [id], onDelete: Cascade)
+  libraryContent LibraryContent       @relation(fields: [libraryContentId], references: [id], onDelete: Restrict)
+  activityEvents ChildActivityEvent[]
+
+  @@unique([id, childId])
+  @@index([childId, startedAt])
+  @@index([childId, completedAt])
+  @@index([libraryContentId, startedAt])
+  @@map("library_playback")
 }
 
 /// Per-child experience settings (1:1 with Child).

@@ -1,5 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ChildActivityType, MissionFeedbackRating, MissionPeriod } from '@prisma/client';
+import {
+  ChildActivityType,
+  LibraryContentType,
+  MissionFeedbackRating,
+  MissionPeriod,
+} from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import { IsEnum, IsISO8601, IsInt, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
 
@@ -57,6 +62,25 @@ export class MissionTrendDto {
   @ApiProperty({ type: [MissionTrendPointDto] }) points!: MissionTrendPointDto[];
 }
 
+export class LibraryMostAccessedDto {
+  @ApiProperty({ format: 'uuid' }) contentId!: string;
+  @ApiProperty() title!: string;
+  @ApiProperty({ enum: LibraryContentType }) contentType!: LibraryContentType;
+  @ApiProperty({ minimum: 1 }) accessCount!: number;
+}
+
+export class LibraryInsightsDto {
+  @ApiProperty() contentsStarted!: number;
+  @ApiProperty() contentsCompleted!: number;
+  @ApiProperty() storiesStarted!: number;
+  @ApiProperty() storiesCompleted!: number;
+  @ApiProperty() musicStarted!: number;
+  @ApiProperty() musicCompleted!: number;
+  @ApiProperty() videosStarted!: number;
+  @ApiProperty() videosCompleted!: number;
+  @ApiProperty({ type: [LibraryMostAccessedDto] }) mostAccessed!: LibraryMostAccessedDto[];
+}
+
 export class ParentInsightsDto {
   @ApiProperty({ enum: ParentInsightsPeriod }) period!: ParentInsightsPeriod;
   @ApiProperty({ format: 'date-time' }) from!: Date;
@@ -68,6 +92,7 @@ export class ParentInsightsDto {
   @ApiProperty() activeDaysFromTrackedActivities!: number;
   @ApiProperty() starsEarnedFromMissions!: number;
   @ApiProperty() crystalsEarnedFromMissions!: number;
+  @ApiProperty({ type: LibraryInsightsDto }) library!: LibraryInsightsDto;
   @ApiProperty({ type: MissionPeriodComparisonDto })
   missionPeriodComparison!: MissionPeriodComparisonDto;
   @ApiProperty({ type: MissionTrendDto }) missionTrend!: MissionTrendDto;
@@ -131,15 +156,32 @@ export class MissionHistoryFeedbackDto {
   updatedAt!: Date | null;
 }
 
+export enum ActivityHistoryItemType {
+  MISSION = 'MISSION',
+  LIBRARY = 'LIBRARY',
+}
+
+export class LibraryHistoryDto {
+  @ApiProperty({ format: 'uuid' }) contentId!: string;
+  @ApiProperty() title!: string;
+  @ApiProperty({ enum: LibraryContentType }) contentType!: LibraryContentType;
+  @ApiProperty({ format: 'date-time' }) startedAt!: Date;
+  @ApiPropertyOptional({ format: 'date-time', nullable: true }) completedAt!: Date | null;
+}
+
 export class ActivityHistoryItemDto {
   @ApiProperty({ format: 'uuid' }) eventId!: string;
-  @ApiProperty({ format: 'uuid' }) missionCompletionId!: string;
-  @ApiProperty({ enum: ChildActivityType }) type!: ChildActivityType;
+  @ApiPropertyOptional({ format: 'uuid', nullable: true }) missionCompletionId!: string | null;
+  @ApiProperty({ enum: ActivityHistoryItemType }) type!: ActivityHistoryItemType;
   @ApiProperty({ format: 'date-time' }) occurredAt!: Date;
-  @ApiProperty({ type: MissionHistorySummaryDto }) mission!: MissionHistorySummaryDto;
-  @ApiProperty({ type: MissionHistoryRewardsDto }) rewards!: MissionHistoryRewardsDto;
+  @ApiPropertyOptional({ type: MissionHistorySummaryDto, nullable: true })
+  mission!: MissionHistorySummaryDto | null;
+  @ApiPropertyOptional({ type: MissionHistoryRewardsDto, nullable: true })
+  rewards!: MissionHistoryRewardsDto | null;
   @ApiPropertyOptional({ type: MissionHistoryFeedbackDto, nullable: true })
   missionFeedback!: MissionHistoryFeedbackDto | null;
+  @ApiPropertyOptional({ type: LibraryHistoryDto, nullable: true })
+  library!: LibraryHistoryDto | null;
 }
 
 export class ActivityHistoryPageDto {
