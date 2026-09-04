@@ -183,6 +183,22 @@ jobs:
 
           set -euo pipefail
 
+          CURRENT_STEP="bootstrap"
+
+          deploy_step() {
+            CURRENT_STEP="$1"
+            echo "[DEPLOY] $CURRENT_STEP"
+          }
+
+          deploy_error() {
+            local exit_code=$?
+            if [ "$exit_code" -ne 0 ]; then
+              echo "[DEPLOY] failed step: $CURRENT_STEP (exit code $exit_code)" >&2
+            fi
+          }
+
+          trap deploy_error EXIT
+
           echo "========================================"
           echo "PupiMundo Backend Deploy"
           echo "========================================"
@@ -193,6 +209,7 @@ jobs:
           # --------------------------------------------------------
           # Validar instalação existente
           # --------------------------------------------------------
+          deploy_step "prepare"
           mkdir -p "$VPS_BACKEND_PATH"
 
           # O .env de produção fica SOMENTE na VPS.
@@ -216,6 +233,7 @@ jobs:
           # --------------------------------------------------------
           echo "Extraindo nova versão..."
 
+          deploy_step "extract"
           tar -xzf "$ARCHIVE" -C "$VPS_BACKEND_PATH"
 
           rm -f "$ARCHIVE"
@@ -228,6 +246,7 @@ jobs:
           echo "Instalando dependências..."
 
           # Build and migration CLIs are development dependencies.
+          deploy_step "npm ci"
           npm ci --include=dev
 
           # --------------------------------------------------------
@@ -235,6 +254,7 @@ jobs:
           # --------------------------------------------------------
           echo "Gerando Prisma Client..."
 
+          deploy_step "prisma generate"
           npm run prisma:generate
 
           # --------------------------------------------------------
@@ -242,6 +262,7 @@ jobs:
           # --------------------------------------------------------
           echo "Compilando backend..."
 
+          deploy_step "build"
           npm run build
 
           # Garantir que o build realmente produziu a aplicação
@@ -262,6 +283,7 @@ jobs:
           # --------------------------------------------------------
           echo "Aplicando migrations Prisma..."
 
+          deploy_step "migrate deploy"
           npx prisma migrate deploy
 
           # --------------------------------------------------------
@@ -273,6 +295,7 @@ jobs:
           # configuracoes continuam sendo carregadas do .env existente.
           export NODE_ENV=production
 
+          deploy_step "PM2"
           PM2_REGISTRATION="$(pm2 jlist | node -e '
             let processes = "";
             process.stdin.setEncoding("utf8");
@@ -387,6 +410,7 @@ jobs:
           # Health Check
           # --------------------------------------------------------
           echo "Aguardando health check de producao..."
+          deploy_step "health"
           HEALTH_CHECK_PASSED=false
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
             echo "Health check $attempt/10..."
@@ -412,6 +436,7 @@ jobs:
             exit 1
           fi
 
+          deploy_step "docs"
           DOCS_STATUS="$(curl \
             --silent \
             --show-error \
@@ -430,6 +455,21 @@ jobs:
           echo "========================================"
 
           REMOTE
+            set +e
+            if [ -f "$RUNNER_TEMP/backend-deploy.log" ]; then
+              echo "[DEPLOY] sanitized remote diagnostics"
+              sed -E \
+                -e 's#(postgres(ql)?://)[^[:space:]]+#\1[REDACTED_DATABASE_URL]#g' \
+                -e 's#(DATABASE_URL|VPS_HOST|VPS_USER|VPS_BACKEND_PATH|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|SSH_KEY)([[:space:]]*[:=][[:space:]]*)[^[:space:]]+#\1\2[REDACTED]#Ig' \
+                -e 's#(Authorization:[[:space:]]*Bearer[[:space:]]+)[^[:space:]]+#\1[REDACTED]#Ig' \
+                -e 's#([[:alnum:]_.-]+@[[:alnum:]_.-]+)#[REDACTED_TARGET]#g' \
+                -e 's#([0-9]{1,3}\.){3}[0-9]{1,3}#[REDACTED_HOST]#g' \
+                -e 's#([[:alnum:]_-]+\.)+[[:alpha:]]{2,}(:[0-9]+)?#[REDACTED_HOST]#g' \
+                -e 's#https?://[^[:space:]]+#https://[REDACTED_URL]#g' \
+                "$RUNNER_TEMP/backend-deploy.log" \
+                | grep -Ei '\[DEPLOY\]|error|fail|prisma|npm|migration|migrate|health|pm2|docs|dist|permission|not found|connection|timeout|refused' \
+                | tail -n 80 || true
+            fi
             rm -f "$RUNNER_TEMP/backend-deploy.log"
             echo "ERRO: Falha na execução remota do deploy."
             exit 1
