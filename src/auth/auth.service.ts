@@ -36,6 +36,22 @@ export class AuthService {
     return this.config.get<AppConfig>('app')!;
   }
 
+  async verificationStatus(responsibleId: string) {
+    const owner = await this.prisma.responsible.findUnique({
+      where: { id: responsibleId },
+      select: { administrativeActivation: { select: { responsibleId: true } } },
+    });
+    if (!owner) throw new UnauthorizedException('Session unavailable');
+
+    return {
+      version: 1,
+      emailVerified: false,
+      verifiedAt: null,
+      parentalLegitimacyVerified: false,
+      administrativelyActivated: Boolean(owner.administrativeActivation),
+    };
+  }
+
   async register(dto: RegisterDto): Promise<ResponsiblePublicDto> {
     // DTO already enforces termsAccepted === true, but keep a defensive check.
     if (!dto.termsAccepted) {

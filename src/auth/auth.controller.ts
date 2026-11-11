@@ -1,7 +1,9 @@
-import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Header, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiBody, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { Public } from 'src/common/decorators/public.decorator';
+import { CurrentUser } from 'src/common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from 'src/common/constants';
 import { AuthService } from './auth.service';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { LoginDto, LoginResponseDto } from './dto/login.dto';
@@ -11,6 +13,12 @@ import { RegisterDto, ResponsiblePublicDto } from './dto/register.dto';
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
+
+  @Get('verification-status')
+  @Header('Cache-Control', 'no-store')
+  verificationStatus(@CurrentUser() user: AuthenticatedUser) {
+    return this.authService.verificationStatus(user.id);
+  }
 
   @Public()
   @Post('register')

@@ -159,8 +159,20 @@ model Responsible {
 
   children Child[]
   familyNotes FamilyNote[]
+  administrativeActivation AdministrativeAccountActivation?
 
   @@map("responsible")
+}
+
+model AdministrativeAccountActivation {
+  responsibleId          String      @id @map("responsible_id") @db.Uuid
+  activatedAt            DateTime    @default(now()) @map("activated_at") @db.Timestamptz(3)
+  authorizedBy           String      @map("authorized_by")
+  authorizationRef       String      @map("authorization_ref")
+  holderConsentConfirmed Boolean     @map("holder_consent_confirmed")
+  responsible            Responsible @relation(fields: [responsibleId], references: [id], onDelete: Cascade)
+
+  @@map("administrative_account_activation")
 }
 
 /// A child profile linked to a responsible. No independent login.
